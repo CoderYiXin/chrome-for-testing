@@ -20,10 +20,12 @@ import {
 	predatesChromeDriverAvailability,
 	predatesChromeHeadlessShellAvailability,
 	predatesMojoJsAvailability,
+	predatesLinuxArm64Availability,
 } from './is-older-version.mjs';
 
 // Lorry download bucket labels.
 export const platforms = new Set([
+	'linux-arm64',
 	'linux64',
 	'mac-arm64',
 	'mac-x64',
@@ -59,6 +61,12 @@ export const makeDownloadsForVersion = (version) => {
 		}
 		// Other CfT assets are platform-specific.
 		for (const platform of platforms) {
+			if (
+				platform === 'linux-arm64' &&
+				predatesLinuxArm64Availability(version)
+			) {
+				continue;
+			}
 			const url = makeDownloadUrl({ version, platform, binary });
 			urls.push({ binary, platform, url });
 		}
@@ -69,35 +77,36 @@ export const makeDownloadsForVersion = (version) => {
 export const checkDownloadsForVersion = async (version) => {
 	const downloads = makeDownloadsForVersion(version);
 
-	// Add `isOk` and `status` properties.
-	let hasFailure = false;
-	for (const download of downloads) {
-		const { binary, url } = download;
-		const response = await fetch(url, { method: 'head' });
-		const status = response.status;
-		if (status !== 200) {
-			const ignoreChromeDriver =
-				binary === 'chromedriver' && predatesChromeDriverAvailability(version);
-			const ignoreChromeHeadlessShell =
-				binary === 'chrome-headless-shell' &&
-				predatesChromeHeadlessShellAvailability(version);
-			const ignoreMojoJs =
-				binary === 'mojojs' && predatesMojoJsAvailability(version);
-			const ignore =
-				ignoreChromeDriver || ignoreChromeHeadlessShell || ignoreMojoJs;
-			if (ignore) {
-				// Do not consider missing ChromeDriver, chrome-headless-shell,
-				// or MojoJS assets a failure for versions predating their CfT
-				// release.
+	await Promise.all(
+		downloads.map(async (download) => {
+			const { binary, url } = download;
+			const response = await fetch(url, { method: 'head' });
+			const status = response.status;
+			download.status = status;
+			if (status !== 200) {
+				const ignoreChromeDriver =
+					binary === 'chromedriver' &&
+					predatesChromeDriverAvailability(version);
+				const ignoreChromeHeadlessShell =
+					binary === 'chrome-headless-shell' &&
+					predatesChromeHeadlessShellAvailability(version);
+				const ignoreMojoJs =
+					binary === 'mojojs' && predatesMojoJsAvailability(version);
+				const ignore =
+					ignoreChromeDriver || ignoreChromeHeadlessShell || ignoreMojoJs;
+				if (!ignore) {
+					// Do not consider missing ChromeDriver, chrome-headless-shell,
+					// or MojoJS assets a failure for versions predating their CfT
+					// release.
+					download.isOk = false;
+				}
 			} else {
-				download.isOk = false;
-				hasFailure = true;
+				download.isOk = true;
 			}
-		} else {
-			download.isOk = true;
-		}
-		download.status = status;
-	}
+		}),
+	);
+
+	const hasFailure = downloads.some((d) => d.isOk === false);
 	return {
 		downloads,
 		isOk: !hasFailure,
